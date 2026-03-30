@@ -1,32 +1,47 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const PHASES = [
-  { time: 0,   text: 'I have a dream' },
-  { time: 1.5, text: "I have a dream and don't know where to start" },
-  { time: 3,   text: 'I want to open a furniture-coffee shop in Austin.' },
-]
+const GLITCH_BURST_DURATION = 800
 
-const CHAR_REVEAL_SPEED = 45
-const FADE_DURATION = 600
-const GLITCH_BURST_DURATION = 800 // ms of heavy glitch on phase change
-
-export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, onCursorMove }) {
-  const [phase, setPhase] = useState(-1)
-  const [displayText, setDisplayText] = useState('')
-  const [revealIndex, setRevealIndex] = useState(0) // how many chars fully revealed (100%)
-  const [opacity, setOpacity] = useState(0)
+/**
+ * AnimatedText — Driven by timeline state from parent.
+ * No internal timers or audio polling.
+ * Receives: timelineState, onBoundsChange, onCursorMove
+ */
+export default function AnimatedText({ timelineState, onBoundsChange, onCursorMove }) {
   const containerRef = useRef(null)
-  const baseTextRef = useRef(null) // ref on the base white text span for measuring width
-  const timerRef = useRef(null)
-  const prevPhaseRef = useRef(-1)
-  const targetTextRef = useRef('')
-  const revealProgressRef = useRef(0) // 0→1 continuous progress
-
-  // Glitch animation state
-  const [glitch, setGlitch] = useState({ rx: 0, gx: 0, cy: 0, o1: 0, o2: 0, skew: 0, barY: 50 })
+  const baseTextRef = useRef(null)
   const glitchRafRef = useRef(null)
-  const glitchIntensityRef = useRef(0)
+  const lastPhaseRef = useRef(-1)
   const burstTimeRef = useRef(0)
+
+  // Glitch animation state (driven by rAF for smooth flicker)
+  const [glitch, setGlitch] = useState({ rx: 0, gx: 0, cy: 0, o1: 0, o2: 0, skew: 0, barY: 50 })
+  const glitchTargetRef = useRef(0)
+
+  const {
+    phaseIndex = -1,
+    phaseProgress = 0,
+    displayText = '',
+    glitchIntensity = 0,
+    inPause = false,
+    inReveal = false,
+    inSettle = false,
+    isFinalPhase = false,
+    overallProgress = 0,
+  } = timelineState || {}
+
+  // Detect phase change → trigger glitch burst
+  useEffect(() => {
+    if (phaseIndex >= 0 && phaseIndex !== lastPhaseRef.current) {
+      lastPhaseRef.current = phaseIndex
+      burstTimeRef.current = Date.now()
+    }
+  }, [phaseIndex])
+
+  // Update glitch target intensity from timeline
+  useEffect(() => {
+    glitchTargetRef.current = glitchIntensity
+  }, [glitchIntensity])
 
   const reportBounds = useCallback(() => {
     if (containerRef.current && onBoundsChange) {
@@ -40,38 +55,36 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, 
     }
   }, [onBoundsChange])
 
-  // --- Glitch animation loop (rAF) ---
+  // Glitch animation loop
   useEffect(() => {
     let active = true
     function loop() {
       if (!active) return
       const elapsed = Date.now() - burstTimeRef.current
-      // Intensity: decays from 1→0 over burst duration, then stays at idle level
       const burstT = Math.max(0, 1 - elapsed / GLITCH_BURST_DURATION)
-      glitchIntensityRef.current = 0.06 + burstT * 0.94 // 0.06 idle, 1.0 peak
+      const baseI = glitchTargetRef.current
+      const I = Math.min(1, baseI + burstT * 0.6)
 
-      const I = glitchIntensityRef.current
-      const fire = Math.random() < (0.08 + I * 0.55)
-
+      const fire = Math.random() < (0.06 + I * 0.5)
       if (fire) {
-        const maxX = 2 + I * 14
+        const maxX = 1.5 + I * 12
         setGlitch({
           rx: (Math.random() - 0.5) * maxX,
           gx: (Math.random() - 0.5) * maxX,
-          cy: (Math.random() - 0.5) * maxX * 0.4,
-          o1: 0.12 + I * 0.65,
-          o2: 0.10 + I * 0.55,
-          skew: (Math.random() - 0.5) * I * 4,
+          cy: (Math.random() - 0.5) * maxX * 0.35,
+          o1: 0.08 + I * 0.6,
+          o2: 0.06 + I * 0.5,
+          skew: (Math.random() - 0.5) * I * 3.5,
           barY: Math.random() * 100,
         })
       } else {
         setGlitch(prev => ({
-          rx: prev.rx * 0.75,
-          gx: prev.gx * 0.75,
-          cy: prev.cy * 0.75,
-          o1: prev.o1 * 0.88,
-          o2: prev.o2 * 0.88,
-          skew: prev.skew * 0.8,
+          rx: prev.rx * 0.72,
+          gx: prev.gx * 0.72,
+          cy: prev.cy * 0.72,
+          o1: prev.o1 * 0.85,
+          o2: prev.o2 * 0.85,
+          skew: prev.skew * 0.78,
           barY: prev.barY,
         }))
       }
@@ -81,76 +94,18 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, 
     return () => { active = false; cancelAnimationFrame(glitchRafRef.current) }
   }, [])
 
-  // --- Audio sync ---
-  useEffect(() => {
-    const audio = audioRef?.current
-    if (!audio) return
-    const id = setInterval(() => {
-      const t = audio.currentTime
-      let next = -1
-      for (let i = PHASES.length - 1; i >= 0; i--) {
-        if (t >= PHASES[i].time) { next = i; break }
-      }
-      if (next !== prevPhaseRef.current && next >= 0) {
-        prevPhaseRef.current = next
-        setPhase(next)
-        burstTimeRef.current = Date.now() // trigger glitch burst
-        onPhaseChange?.(next)
-      }
-    }, 50)
-    return () => clearInterval(id)
-  }, [audioRef, onPhaseChange])
-
-  // --- Typewriter reveal ---
-  useEffect(() => {
-    if (phase < 0) return
-    const target = PHASES[phase].text
-    clearInterval(timerRef.current)
-
-    setOpacity(0)
-    const fadeIn = setTimeout(() => setOpacity(1), 50)
-
-    const prev = phase > 0 ? PHASES[phase - 1].text : ''
-    let prefix = ''
-    for (let i = 0; i < Math.min(prev.length, target.length); i++) {
-      if (prev[i] === target[i]) prefix += target[i]; else break
-    }
-    let idx = prefix.length
-    setDisplayText(prefix)
-    setRevealIndex(Math.max(0, prefix.length - 2))
-    targetTextRef.current = target
-    revealProgressRef.current = target.length > 0 ? prefix.length / target.length : 0
-
-    timerRef.current = setInterval(() => {
-      idx++
-      if (idx <= target.length) {
-        setDisplayText(target.slice(0, idx))
-        setRevealIndex(Math.max(0, idx - 2))
-        revealProgressRef.current = idx / target.length
-        reportBounds()
-      } else {
-        setRevealIndex(target.length)
-        revealProgressRef.current = 1
-        clearInterval(timerRef.current)
-      }
-    }, CHAR_REVEAL_SPEED)
-
-    return () => { clearInterval(timerRef.current); clearTimeout(fadeIn) }
-  }, [phase, reportBounds])
-
-  // Report bounds AND compute continuous headX for particle trailblazer
+  // Report bounds + cursor position
   useEffect(() => {
     reportBounds()
-    if (baseTextRef.current && onCursorMove) {
+    if (baseTextRef.current && onCursorMove && inReveal) {
       const rect = baseTextRef.current.getBoundingClientRect()
-      const textStartX = rect.left
-      const textWidth = rect.width
-      const progress = revealProgressRef.current
-      const headX = textStartX + textWidth * progress
+      const headX = rect.left + rect.width
       const baselineY = rect.top + rect.height / 2
-      onCursorMove(progress < 1 ? { x: headX, y: baselineY } : null)
+      onCursorMove({ x: headX, y: baselineY })
+    } else if (!inReveal) {
+      onCursorMove?.(null)
     }
-  }, [displayText, reportBounds, onCursorMove])
+  }, [displayText, phaseProgress, inReveal, reportBounds, onCursorMove])
 
   // Cursor blink
   const [showCursor, setShowCursor] = useState(true)
@@ -159,9 +114,20 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, 
     return () => clearInterval(id)
   }, [])
 
-  const isFinal = phase === PHASES.length - 1
-  const isRevealed = phase >= 0 && displayText === PHASES[phase].text
-  const I = glitchIntensityRef.current
+  const isRevealed = phaseProgress >= 1
+  const curI = glitchTargetRef.current
+
+  // Compute reveal index for dual-pass opacity (last 3 chars at 50%)
+  const revealIndex = Math.max(0, displayText.length - 3)
+
+  // Opacity: fade in from 0 on first phase, stay at 1 after
+  const textOpacity = phaseIndex < 0 ? 0 : inPause ? 0.4 + overallProgress * 0.6 : 1
+
+  // Scale: subtle breathe — slightly larger on final phase
+  const scale = 1 + (isFinalPhase && isRevealed ? 0.008 : 0)
+
+  // Glow intensity increases with overall progress
+  const glowAlpha = 0.04 + overallProgress * 0.15
 
   const textStyle = {
     fontSize: 'clamp(32px, 5vw, 72px)',
@@ -173,12 +139,18 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, 
     wordBreak: 'break-word',
   }
 
+  if (phaseIndex < 0) return null
+
   return (
     <div className="fixed inset-0 flex items-center justify-center" style={{ zIndex: 2 }}>
       <div
         ref={containerRef}
-        className="max-w-[90vw] text-center px-8 relative"
-        style={{ opacity, transition: `opacity ${FADE_DURATION}ms cubic-bezier(0.4,0,0.2,1)` }}
+        className="max-w-[85vw] text-center px-8 relative"
+        style={{
+          opacity: textOpacity,
+          transform: `scale(${scale})`,
+          transition: 'opacity 0.8s cubic-bezier(0.4,0,0.2,1), transform 1.2s cubic-bezier(0.4,0,0.2,1)',
+        }}
       >
         {/* ---- Glitch layer: RED ---- */}
         <span
@@ -215,15 +187,15 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, 
           style={{
             ...textStyle,
             color: '#fff',
-            textShadow: `0 0 20px rgba(255,255,255,0.15), 0 0 60px rgba(0,255,159,${0.04 + I * 0.12})`,
+            textShadow: `0 0 30px rgba(255,255,255,${glowAlpha}), 0 0 80px rgba(0,255,159,${glowAlpha * 0.8})`,
           }}
         >
           {displayText.split('').map((ch, i) => (
             <span
               key={i}
               style={{
-                opacity: i < revealIndex ? 1 : 0.5,
-                transition: 'opacity 0.15s ease-out',
+                opacity: i < revealIndex ? 1 : 0.45,
+                transition: 'opacity 0.2s ease-out',
               }}
             >{ch}</span>
           ))}
@@ -231,22 +203,22 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, 
             className="inline-block w-[3px] ml-1 bg-white align-middle"
             style={{
               height: 'clamp(28px, 4.5vw, 64px)',
-              opacity: (isRevealed && isFinal) ? 0 : showCursor ? 0.8 : 0,
-              transition: 'opacity 0.1s',
+              opacity: inReveal && showCursor ? 0.8 : (isRevealed && isFinalPhase) ? 0 : showCursor ? 0.4 : 0,
+              transition: 'opacity 0.15s',
               verticalAlign: 'text-bottom',
-              boxShadow: '0 0 8px rgba(0,255,159,0.5)',
+              boxShadow: `0 0 ${8 + curI * 15}px rgba(0,255,159,${0.4 + curI * 0.4})`,
             }}
           />
         </span>
 
         {/* ---- Scanline glitch bar ---- */}
-        {I > 0.25 && (
+        {curI > 0.2 && (
           <div
             className="absolute left-0 right-0 pointer-events-none"
             style={{
               top: `${glitch.barY}%`,
-              height: `${2 + I * 5}px`,
-              background: `linear-gradient(90deg, transparent 5%, rgba(0,255,159,${I * 0.4}) 30%, rgba(255,59,59,${I * 0.3}) 70%, transparent 95%)`,
+              height: `${1.5 + curI * 4}px`,
+              background: `linear-gradient(90deg, transparent 5%, rgba(0,255,159,${curI * 0.35}) 30%, rgba(255,59,59,${curI * 0.25}) 70%, transparent 95%)`,
               mixBlendMode: 'screen',
             }}
           />

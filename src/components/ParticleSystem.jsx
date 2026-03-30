@@ -1,65 +1,42 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect } from 'react'
 
 /**
- * PARTICLE SYSTEM — Trailblazer particles that follow text reveal cursor
- *
- * Particles spawn near the currently revealing character and drift right
- * with sine-wave sway, creating a visible trail behind the text cursor.
- * On phase change: burst outward from text center.
- *
- * Tweakable:
- * - PARTICLE_COUNT    — max on screen
- * - TRAIL_SPAWN_RATE  — particles spawned per frame at cursor
- * - TRAIL_LIFE        — how long trail particles live (frames)
- * - TRAIL_SPEED       — forward (left→right) drift speed
- * - SWAY_AMP          — vertical sine wave amplitude
- * - COLORS            — neon palette
- * - SIZE_RANGE        — square pixel size
- * - BURST_COUNT       — particles spawned on phase change
+ * PARTICLE SYSTEM — Timeline-driven.
+ * Receives: timelineState, textBounds, cursorPos
+ * particleIntensity from timeline controls spawn rate + density.
  */
 
 const COLORS = [
-  '#00ff9f', // green
-  '#00ffff', // cyan
-  '#ff3b3b', // red
-  '#facc15', // yellow
-  '#f472b6', // pink
-  '#a78bfa', // purple
-  '#fb923c', // orange
-  '#22d3ee', // sky cyan
-  '#e879f9', // fuchsia
-  '#4ade80', // lime
-  '#38bdf8', // light blue
-  '#fbbf24', // amber
-  '#f87171', // coral
-  '#2dd4bf', // teal
-  '#c084fc', // violet
+  '#00ff9f', '#00ffff', '#ff3b3b', '#facc15', '#f472b6',
+  '#a78bfa', '#fb923c', '#22d3ee', '#e879f9', '#4ade80',
+  '#38bdf8', '#fbbf24', '#f87171', '#2dd4bf', '#c084fc',
 ]
 
-const PARTICLE_COUNT = 450
-const TRAIL_SPAWN_RATE = 8    // particles per frame at cursor
-const TRAIL_LIFE = [25, 50]   // frames — longer life = visible trail behind head
-const TRAIL_SPEED = [0.8, 3.5] // forward drift px/frame
-const SWAY_AMP = [1.5, 5.0]   // sine wave vertical amplitude
-const SIZE_RANGE = [2, 6]
-const BURST_COUNT = 100
-const GLOW_BLUR = 6
+const MAX_PARTICLES = 600
+const BASE_SPAWN_RATE = 10
+const TRAIL_LIFE = [25, 55]
+const TRAIL_SPEED = [0.6, 3.8]
+const SWAY_AMP = [1.5, 5.5]
+const SIZE_RANGE = [1.5, 6]
+const BURST_COUNT = 120
+const GLOW_BLUR = 7
 
 function rand(a, b) { return Math.random() * (b - a) + a }
 
-function createTrailParticle(cx, cy) {
+function createTrailParticle(cx, cy, intensity) {
+  const spreadY = 40 + intensity * 60
   return {
-    x: cx + (Math.random() - 0.5) * 20,
-    y: cy + (Math.random() - 0.5) * 80,
-    vx: rand(TRAIL_SPEED[0], TRAIL_SPEED[1]),
+    x: cx + (Math.random() - 0.5) * 18,
+    y: cy + (Math.random() - 0.5) * spreadY,
+    vx: rand(TRAIL_SPEED[0], TRAIL_SPEED[1]) * (0.6 + intensity * 0.4),
     vy: 0,
-    size: rand(SIZE_RANGE[0], SIZE_RANGE[1]),
+    size: rand(SIZE_RANGE[0], SIZE_RANGE[1]) * (0.7 + intensity * 0.3),
     color: COLORS[Math.floor(Math.random() * COLORS.length)],
-    opacity: rand(0.6, 1.0),
+    opacity: rand(0.5, 1.0),
     life: Math.floor(rand(TRAIL_LIFE[0], TRAIL_LIFE[1])),
     maxLife: 0,
     swayPhase: Math.random() * Math.PI * 2,
-    swayFreq: rand(0.08, 0.18),
+    swayFreq: rand(0.07, 0.2),
     swayAmp: rand(SWAY_AMP[0], SWAY_AMP[1]),
     type: 'trail',
   }
@@ -67,50 +44,71 @@ function createTrailParticle(cx, cy) {
 
 function createBurstParticle(cx, cy) {
   const angle = Math.random() * Math.PI * 2
-  const speed = rand(2, 8)
+  const speed = rand(2.5, 9)
   return {
     x: cx + (Math.random() - 0.5) * 40,
     y: cy + (Math.random() - 0.5) * 20,
     vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed * 0.5, // flatter burst
+    vy: Math.sin(angle) * speed * 0.5,
     size: rand(2, 5),
     color: COLORS[Math.floor(Math.random() * COLORS.length)],
     opacity: rand(0.7, 1),
-    targetOpacity: 1,
-    life: Math.floor(rand(30, 90)),
-    fadeIn: false,
-    wobblePhase: 0,
-    wobbleFreq: 0,
-    wobbleAmp: 0,
+    life: Math.floor(rand(35, 100)),
+    maxLife: 0,
+    swayPhase: 0,
+    swayFreq: 0,
+    swayAmp: 0,
     type: 'burst',
   }
 }
 
-export default function ParticleSystem({ textBounds, burstTrigger, cursorPos }) {
+// Ambient drift particles for hold/pause phases
+function createAmbientParticle(w, h, intensity) {
+  return {
+    x: Math.random() * w,
+    y: Math.random() * h,
+    vx: (Math.random() - 0.5) * 0.5,
+    vy: (Math.random() - 0.5) * 0.3,
+    size: rand(1, 3),
+    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+    opacity: rand(0.1, 0.3) * intensity,
+    life: Math.floor(rand(60, 150)),
+    maxLife: 0,
+    swayPhase: Math.random() * Math.PI * 2,
+    swayFreq: rand(0.02, 0.06),
+    swayAmp: rand(0.3, 1.2),
+    type: 'ambient',
+  }
+}
+
+export default function ParticleSystem({ timelineState, textBounds, cursorPos }) {
   const canvasRef = useRef(null)
   const particlesRef = useRef([])
   const rafRef = useRef(null)
   const frameRef = useRef(0)
-  const lastBurstRef = useRef(-1)
-  const cursorRef = useRef(null) // latest cursor position
+  const lastPhaseRef = useRef(-1)
+  const cursorRef = useRef(null)
+  const stateRef = useRef(null)
 
-  // Keep cursorPos in a ref so the animation loop always reads the latest
+  useEffect(() => { cursorRef.current = cursorPos }, [cursorPos])
+  useEffect(() => { stateRef.current = timelineState }, [timelineState])
+
+  // Burst on phase change
   useEffect(() => {
-    cursorRef.current = cursorPos
-  }, [cursorPos])
-
-  // Spawn burst particles when burstTrigger changes
-  useEffect(() => {
-    if (burstTrigger == null || burstTrigger === lastBurstRef.current) return
-    lastBurstRef.current = burstTrigger
-
-    const cx = textBounds?.x ?? window.innerWidth / 2
-    const cy = textBounds?.y ?? window.innerHeight / 2
-    const particles = particlesRef.current
-    for (let i = 0; i < BURST_COUNT; i++) {
-      particles.push(createBurstParticle(cx, cy))
+    const pi = timelineState?.phaseIndex ?? -1
+    if (pi >= 0 && pi !== lastPhaseRef.current) {
+      lastPhaseRef.current = pi
+      const cx = textBounds?.x ?? window.innerWidth / 2
+      const cy = textBounds?.y ?? window.innerHeight / 2
+      const particles = particlesRef.current
+      const count = pi === 2 ? BURST_COUNT * 1.5 : BURST_COUNT // bigger burst on final phase
+      for (let i = 0; i < count; i++) {
+        const p = createBurstParticle(cx, cy)
+        p.maxLife = p.life
+        particles.push(p)
+      }
     }
-  }, [burstTrigger, textBounds])
+  }, [timelineState?.phaseIndex, textBounds])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -130,20 +128,32 @@ export default function ParticleSystem({ textBounds, burstTrigger, cursorPos }) 
     resize()
     window.addEventListener('resize', resize)
 
-    // No initial seeding — particles spawn at cursor during reveal
-
     function animate() {
       frameRef.current++
       const t = frameRef.current
       const particles = particlesRef.current
       ctx.clearRect(0, 0, w, h)
 
+      const state = stateRef.current
       const cursor = cursorRef.current
+      const intensity = state?.particleIntensity ?? 0
 
-      // Spawn trail particles at cursor position (only while text is revealing)
-      if (cursor && particles.length < PARTICLE_COUNT) {
-        for (let s = 0; s < TRAIL_SPAWN_RATE; s++) {
-          const p = createTrailParticle(cursor.x, cursor.y)
+      // Dynamic spawn rate based on timeline intensity
+      const spawnRate = Math.floor(BASE_SPAWN_RATE * intensity)
+
+      // Spawn trail particles at cursor during reveal
+      if (cursor && state?.inReveal && particles.length < MAX_PARTICLES) {
+        for (let s = 0; s < spawnRate; s++) {
+          const p = createTrailParticle(cursor.x, cursor.y, intensity)
+          p.maxLife = p.life
+          particles.push(p)
+        }
+      }
+
+      // Ambient particles during pause/hold/settle
+      if (!state?.inReveal && intensity > 0.05 && particles.length < MAX_PARTICLES * 0.3) {
+        if (Math.random() < intensity * 0.3) {
+          const p = createAmbientParticle(w, h, intensity)
           p.maxLife = p.life
           particles.push(p)
         }
@@ -151,45 +161,42 @@ export default function ParticleSystem({ textBounds, burstTrigger, cursorPos }) 
 
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i]
-
-        // Life & fade out
         p.life--
-        const lifeFraction = p.maxLife > 0 ? p.life / p.maxLife : 0
-        if (p.type === 'trail') {
-          // Smooth fade: full opacity → 0 over lifetime
-          p.opacity = lifeFraction * (p.opacity > 0 ? 1 : 0.8)
-        }
-        if (p.life <= 0 || p.opacity < 0.008) {
+        const lifeFrac = p.maxLife > 0 ? p.life / p.maxLife : 0
+
+        if (p.life <= 0 || p.opacity < 0.005) {
           particles.splice(i, 1)
           continue
         }
 
         if (p.type === 'trail') {
-          // Forward drift (left → right)
+          p.opacity = lifeFrac * 0.9
           p.x += p.vx
-          // Sine wave sway
           p.vy = Math.sin(t * p.swayFreq + p.swayPhase) * p.swayAmp
           p.y += p.vy
-        } else {
-          // Burst: decelerate outward
-          p.vx *= 0.96
-          p.vy *= 0.96
+        } else if (p.type === 'burst') {
+          p.vx *= 0.955
+          p.vy *= 0.955
           p.x += p.vx
           p.y += p.vy
-          if (p.life < 30) p.opacity *= 0.92
+          if (p.life < 35) p.opacity *= 0.91
+        } else if (p.type === 'ambient') {
+          p.opacity = lifeFrac * 0.25
+          p.x += p.vx + Math.sin(t * p.swayFreq + p.swayPhase) * p.swayAmp * 0.3
+          p.y += p.vy
         }
 
-        // Remove off-screen
-        if (p.x < -50 || p.x > w + 50 || p.y < -50 || p.y > h + 50) {
+        // Off-screen removal
+        if (p.x < -60 || p.x > w + 60 || p.y < -60 || p.y > h + 60) {
           particles.splice(i, 1)
           continue
         }
 
-        // Draw
+        // Draw with glow
         ctx.save()
         ctx.globalAlpha = p.opacity
         ctx.shadowColor = p.color
-        ctx.shadowBlur = GLOW_BLUR
+        ctx.shadowBlur = GLOW_BLUR + (p.type === 'burst' ? 4 : 0)
         ctx.fillStyle = p.color
         ctx.fillRect(
           Math.round(p.x - p.size / 2),
@@ -207,7 +214,7 @@ export default function ParticleSystem({ textBounds, burstTrigger, cursorPos }) 
       cancelAnimationFrame(rafRef.current)
       window.removeEventListener('resize', resize)
     }
-  }, [textBounds])
+  }, [])
 
   return (
     <canvas
