@@ -24,7 +24,7 @@ export default function Scene() {
 
   const handleStart = () => {
     if (!audioRef.current) {
-      audioRef.current = new Audio('/assets/audio/audio.mp3')
+      audioRef.current = new Audio(`${import.meta.env.BASE_URL}assets/audio/audio.mp3`)
       audioRef.current.preload = 'auto'
     }
 
