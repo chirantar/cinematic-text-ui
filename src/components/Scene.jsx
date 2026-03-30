@@ -7,6 +7,7 @@ export default function Scene() {
   const [started, setStarted] = useState(false)
   const [overlayOpacity, setOverlayOpacity] = useState(1)
   const [burstTrigger, setBurstTrigger] = useState(null)
+  const [cursorPos, setCursorPos] = useState(null)
   const audioRef = useRef(null)
 
   const handleBoundsChange = useCallback((bounds) => {
@@ -15,6 +16,10 @@ export default function Scene() {
 
   const handlePhaseChange = useCallback((phase) => {
     setBurstTrigger(phase)
+  }, [])
+
+  const handleCursorMove = useCallback((pos) => {
+    setCursorPos(pos)
   }, [])
 
   const handleStart = () => {
@@ -46,11 +51,12 @@ export default function Scene() {
 
       {started && (
         <>
-          <ParticleSystem textBounds={textBounds} burstTrigger={burstTrigger} />
+          <ParticleSystem textBounds={textBounds} burstTrigger={burstTrigger} cursorPos={cursorPos} />
           <AnimatedText
             onBoundsChange={handleBoundsChange}
             audioRef={audioRef}
             onPhaseChange={handlePhaseChange}
+            onCursorMove={handleCursorMove}
           />
         </>
       )}

@@ -10,13 +10,17 @@ const CHAR_REVEAL_SPEED = 45
 const FADE_DURATION = 600
 const GLITCH_BURST_DURATION = 800 // ms of heavy glitch on phase change
 
-export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange }) {
+export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange, onCursorMove }) {
   const [phase, setPhase] = useState(-1)
   const [displayText, setDisplayText] = useState('')
+  const [revealIndex, setRevealIndex] = useState(0) // how many chars fully revealed (100%)
   const [opacity, setOpacity] = useState(0)
   const containerRef = useRef(null)
+  const baseTextRef = useRef(null) // ref on the base white text span for measuring width
   const timerRef = useRef(null)
   const prevPhaseRef = useRef(-1)
+  const targetTextRef = useRef('')
+  const revealProgressRef = useRef(0) // 0→1 continuous progress
 
   // Glitch animation state
   const [glitch, setGlitch] = useState({ rx: 0, gx: 0, cy: 0, o1: 0, o2: 0, skew: 0, barY: 50 })
@@ -113,17 +117,40 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange }
     }
     let idx = prefix.length
     setDisplayText(prefix)
+    setRevealIndex(Math.max(0, prefix.length - 2))
+    targetTextRef.current = target
+    revealProgressRef.current = target.length > 0 ? prefix.length / target.length : 0
 
     timerRef.current = setInterval(() => {
       idx++
-      if (idx <= target.length) { setDisplayText(target.slice(0, idx)); reportBounds() }
-      else clearInterval(timerRef.current)
+      if (idx <= target.length) {
+        setDisplayText(target.slice(0, idx))
+        setRevealIndex(Math.max(0, idx - 2))
+        revealProgressRef.current = idx / target.length
+        reportBounds()
+      } else {
+        setRevealIndex(target.length)
+        revealProgressRef.current = 1
+        clearInterval(timerRef.current)
+      }
     }, CHAR_REVEAL_SPEED)
 
     return () => { clearInterval(timerRef.current); clearTimeout(fadeIn) }
   }, [phase, reportBounds])
 
-  useEffect(() => { reportBounds() }, [displayText, reportBounds])
+  // Report bounds AND compute continuous headX for particle trailblazer
+  useEffect(() => {
+    reportBounds()
+    if (baseTextRef.current && onCursorMove) {
+      const rect = baseTextRef.current.getBoundingClientRect()
+      const textStartX = rect.left
+      const textWidth = rect.width
+      const progress = revealProgressRef.current
+      const headX = textStartX + textWidth * progress
+      const baselineY = rect.top + rect.height / 2
+      onCursorMove(progress < 1 ? { x: headX, y: baselineY } : null)
+    }
+  }, [displayText, reportBounds, onCursorMove])
 
   // Cursor blink
   const [showCursor, setShowCursor] = useState(true)
@@ -181,8 +208,9 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange }
           }}
         >{displayText}</span>
 
-        {/* ---- Base layer: WHITE ---- */}
+        {/* ---- Base layer: WHITE with per-char dual-pass opacity ---- */}
         <span
+          ref={baseTextRef}
           className="relative"
           style={{
             ...textStyle,
@@ -190,7 +218,15 @@ export default function AnimatedText({ onBoundsChange, audioRef, onPhaseChange }
             textShadow: `0 0 20px rgba(255,255,255,0.15), 0 0 60px rgba(0,255,159,${0.04 + I * 0.12})`,
           }}
         >
-          {displayText}
+          {displayText.split('').map((ch, i) => (
+            <span
+              key={i}
+              style={{
+                opacity: i < revealIndex ? 1 : 0.5,
+                transition: 'opacity 0.15s ease-out',
+              }}
+            >{ch}</span>
+          ))}
           <span
             className="inline-block w-[3px] ml-1 bg-white align-middle"
             style={{
